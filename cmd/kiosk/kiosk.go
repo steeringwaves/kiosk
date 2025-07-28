@@ -1,0 +1,647 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/exec"
+	"os/signal"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"kiosk/internal/config"
+	"kiosk/internal/web"
+
+	"nhooyr.io/websocket"
+	"nhooyr.io/websocket/wsjson"
+)
+
+type TabState struct {
+	config.TabConfig
+	ID          string
+	LastRefresh int64
+	WSURL       string
+	WSConn      *websocket.Conn
+}
+
+type DisplayState struct {
+	Config    config.DisplayConfig
+	DebugPort int
+	Tabs      []*TabState
+	WindowID  string
+}
+
+type RequestID struct {
+	mu sync.Mutex
+	id int
+}
+
+func (r *RequestID) Next() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id := r.id
+	r.id++
+	return id
+}
+
+type Kiosk struct {
+	requestID   *RequestID
+	cfg         config.Config
+	cfgFilename string
+
+	mu      sync.Mutex
+	windows map[string]*DisplayState
+	wg      sync.WaitGroup
+	ctx     context.Context
+	cancel  context.CancelFunc
+}
+
+func NewKiosk() *Kiosk {
+	return &Kiosk{
+		requestID: &RequestID{id: 1},
+		windows:   make(map[string]*DisplayState),
+	}
+}
+
+func binPresent(bin string) bool {
+	if _, err := exec.LookPath(bin); err != nil {
+		return false
+	}
+
+	return true
+}
+
+func ensureDeps(bins []string) {
+	for _, b := range bins {
+		if _, err := exec.LookPath(b); err != nil {
+			log.Fatalf("Missing dependency: %s", b)
+		}
+	}
+}
+
+func ctxHandler(ctx context.Context, cancel context.CancelFunc) {
+	signals := []os.Signal{syscall.SIGINT, syscall.SIGTERM}
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, signals...)
+
+	go func() {
+		defer cancel()
+
+		select {
+		case <-sigs:
+			cancel()
+			return
+		case <-ctx.Done():
+			return
+		}
+	}()
+}
+
+type KioskWeb struct {
+	ctx    context.Context
+	Parent *Kiosk
+}
+
+func (e *KioskWeb) AddDisplay(display config.DisplayConfig) error {
+	log.Printf("Adding display: %+v", display)
+	return nil
+}
+
+func (e *KioskWeb) RemoveDisplay(name string) error {
+	log.Printf("Removing display: %s", name)
+	return nil
+}
+
+func (e *KioskWeb) AddTab(displayName string, tab config.TabConfig) error {
+	log.Printf("Adding tab to display %s: %+v", displayName, tab)
+	return nil
+}
+
+func (e *KioskWeb) RemoveTab(displayName, tabURL string) error {
+	log.Printf("Removing tab from display %s: %s", displayName, tabURL)
+	return nil
+}
+
+func (e *KioskWeb) EditDisplay(display config.DisplayConfig) error {
+	log.Printf("Editing display: %+v", display)
+	return nil
+}
+
+func (e *KioskWeb) EditTab(displayName string, tab config.TabConfig) error {
+	log.Printf("Editing tab on display %s: %+v", displayName, tab)
+	return nil
+}
+
+func (e *KioskWeb) ReloadDisplays() error {
+	log.Println("Reloading displays")
+
+	go func() {
+		e.Parent.Stop()
+		time.Sleep(1 * time.Second)
+
+		e.Parent.loadConfig()
+		e.Parent.Run(e.ctx)
+
+		time.Sleep(1 * time.Second)
+		// os.Exit(0)
+	}()
+
+	return nil
+}
+
+func main() {
+
+	ensureDeps([]string{"xdotool", "chromium"})
+
+	kiosk := NewKiosk()
+	kiosk.loadConfig()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ctxHandler(ctx, cancel)
+	defer cancel()
+
+	// Start the web UI
+	portStr := os.Getenv("PORT")
+	if portStr == "" {
+		portStr = "8080"
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		log.Fatalf("Invalid PORT: %s", portStr)
+	}
+
+	go func() {
+		options := web.KioskWebOptions{
+			Addr:       fmt.Sprintf(":%d", port),
+			ConfigFile: kiosk.cfgFilename,
+			Parent: &KioskWeb{
+				ctx:    ctx,
+				Parent: kiosk,
+			},
+		}
+		kioskWeb := web.NewKioskWeb(ctx, options)
+		kioskWeb.Start()
+	}()
+
+	// Start the kiosk
+	kiosk.Run(ctx)
+
+	<-ctx.Done()
+	os.Exit(0)
+}
+
+func (kiosk *Kiosk) Run(ctx context.Context) error {
+	kiosk.ctx, kiosk.cancel = context.WithCancel(ctx)
+
+	for _, display := range kiosk.cfg.Displays {
+		kiosk.launchChrome(display.Name)
+	}
+
+	for _, display := range kiosk.cfg.Displays {
+		kiosk.moveWindow(display.Name)
+	}
+
+	for _, display := range kiosk.cfg.Displays {
+		if display.Fullscreen {
+			kiosk.sendFullscreen(display.Name)
+		}
+	}
+
+	for _, display := range kiosk.cfg.Displays {
+		kiosk.tabCycler(display.Name)
+	}
+
+	kiosk.wg.Wait()
+
+	kiosk.mu.Lock()
+	if kiosk.cancel != nil {
+		kiosk.cancel()
+		kiosk.cancel = nil
+	}
+
+	kiosk.mu.Unlock()
+
+	return nil
+}
+
+func (kiosk *Kiosk) Stop() {
+	kiosk.mu.Lock()
+
+	if kiosk.cancel != nil {
+		kiosk.cancel()
+		kiosk.cancel = nil
+		kiosk.mu.Unlock()
+
+		kiosk.wg.Wait()
+		return
+	}
+
+	kiosk.mu.Unlock()
+}
+
+func (kiosk *Kiosk) loadConfig() {
+	kiosk.mu.Lock()
+	defer kiosk.mu.Unlock()
+
+	kiosk.cfgFilename = os.Getenv("CONFIG_FILE")
+	if kiosk.cfgFilename == "" {
+		kiosk.cfgFilename = "./kiosk.yml"
+	}
+
+	err := config.Load(&kiosk.cfg, kiosk.cfgFilename)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	kiosk.windows = make(map[string]*DisplayState)
+
+	for _, display := range kiosk.cfg.Displays {
+		if _, exists := kiosk.windows[display.Name]; !exists {
+			ds := &DisplayState{
+				Config:    display,
+				DebugPort: display.DebugPort,
+				Tabs:      make([]*TabState, len(display.Tabs)),
+			}
+
+			for i, tab := range display.Tabs {
+				ds.Tabs[i] = &TabState{
+					TabConfig:   tab,
+					ID:          "",
+					LastRefresh: time.Now().Unix(),
+					WSURL:       "",
+					WSConn:      nil,
+				}
+			}
+
+			kiosk.windows[display.Name] = ds
+		}
+	}
+}
+
+func (kiosk *Kiosk) getLatestWindowID(name string) (string, error) {
+	// Run `xdotool search --onlyvisible --name chromium`
+	out, err := exec.Command("xdotool", "search", "--onlyvisible", "--name", "chromium").Output()
+	if err != nil {
+		return "", fmt.Errorf("[%s] Could not find window: %w", name, err)
+	}
+
+	// Split the output into window IDs
+	winIDs := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(winIDs) == 0 || winIDs[0] == "" {
+		return "", fmt.Errorf("[%s] No window found", name)
+	}
+
+	// Gather existing IDs
+	existing := make(map[string]bool)
+	for _, w := range kiosk.windows {
+		if w.WindowID != "" {
+			existing[w.WindowID] = true
+		}
+	}
+
+	// Find a unique ID that is not already in use
+	for _, id := range winIDs {
+		exists := existing[id]
+		if !exists {
+			log.Printf("[%s] Opened window %s", name, id)
+			return id, nil
+		}
+	}
+
+	return "", fmt.Errorf("[%s] No unique window ID found", name)
+}
+
+func userDataDir(name string) string {
+	return fmt.Sprintf("/tmp/.kiosk-chrome-user-data-%s", name)
+}
+
+func (kiosk *Kiosk) launchChrome(name string) {
+	kiosk.mu.Lock()
+	defer kiosk.mu.Unlock()
+
+	window, ok := kiosk.windows[name]
+	if !ok {
+		return
+	}
+
+	port := window.DebugPort
+	if port == 0 {
+		port = kiosk.cfg.DebugPort
+	}
+	userDir := userDataDir(name)
+	os.RemoveAll(userDir)
+	os.MkdirAll(userDir, 0755)
+
+	if !kiosk.portAvailable(port) {
+		log.Fatalf("[%s] Port %d in use", name, port)
+	}
+
+	url := window.Tabs[0].URL
+	args := []string{
+		fmt.Sprintf("--user-data-dir=%s", userDir),
+		fmt.Sprintf("--window-size=%s", kiosk.cfg.NewWindowSize),
+		fmt.Sprintf("--remote-debugging-port=%d", port),
+		fmt.Sprintf("--remote-allow-origins=http://localhost:%d", port),
+		"--disable-session-crashed-bubble",
+		"--disable-session-restore",
+		"--disable-infobars",
+		"--no-default-browser-check",
+		"--no-first-run",
+		"--disable-extensions",
+		"--new-window",
+		url,
+	}
+	cmd := exec.CommandContext(kiosk.ctx, "chromium", args...)
+	cmd.Stderr = nil
+	_ = cmd.Start()
+
+	err := kiosk.waitForDebugger(name, port)
+	if err != nil {
+		log.Fatalf("[%s] Failed to wait for debugger: %v", name, err)
+	}
+
+	winID, err := kiosk.getLatestWindowID(name)
+	if err != nil {
+		log.Fatalf("[%s] Failed to get latest window ID: %v", name, err)
+	}
+	window.WindowID = winID
+
+	// Fetch tabs
+	err = kiosk.waitForTabID(name, port, window, 0)
+	if err != nil {
+		log.Fatalf("[%s] Failed to wait for tab ID: %v", name, err)
+	}
+
+	for i := 1; i < len(window.Tabs); i++ {
+		tab := window.Tabs[i]
+
+		args = []string{
+			"--new-tab",
+			tab.URL,
+			fmt.Sprintf("--user-data-dir=%s", userDir),
+		}
+
+		cmd = exec.CommandContext(kiosk.ctx, "chromium", args...)
+		cmd.Stderr = nil
+		_ = cmd.Start()
+
+		err = kiosk.waitForTabID(name, port, window, i)
+		if err != nil {
+			log.Fatalf("[%s] Failed to wait for tab ID %d: %v", name, i, err)
+		}
+	}
+}
+
+func (kiosk *Kiosk) waitForTabID(name string, port int, window *DisplayState, tabIndex int) error {
+	for {
+		// Fetch tabs
+		chromeTabs, err := kiosk.fetchTabs(port)
+		if err != nil || len(chromeTabs) == 0 {
+			log.Printf("[%s] Failed to fetch tabs\n", name)
+
+			select {
+			case <-time.After(1 * time.Second):
+			case <-kiosk.ctx.Done():
+				return kiosk.ctx.Err()
+			}
+			continue
+		}
+
+		// Store state
+		for _, chromeTab := range chromeTabs {
+			exists := false
+			id, ok := chromeTab["id"].(string)
+			if !ok {
+				continue
+			}
+
+			wsURL, ok := chromeTab["webSocketDebuggerUrl"].(string)
+			if !ok {
+				continue
+			}
+
+			for _, t := range window.Tabs {
+				if t.ID != "" && t.ID == id {
+					exists = true
+					break
+				}
+			}
+
+			if exists {
+				continue
+			}
+
+			window.Tabs[tabIndex].ID = id
+			window.Tabs[tabIndex].WSURL = wsURL
+			log.Printf("[%s] Tab: %s (ID: %s, WS: %s)\n", name, window.Tabs[tabIndex].URL, id, wsURL)
+			return nil
+		}
+
+		select {
+		case <-time.After(1 * time.Second):
+		case <-kiosk.ctx.Done():
+			return kiosk.ctx.Err()
+		}
+	}
+}
+
+func (kiosk *Kiosk) waitForDebugger(name string, port int) error {
+	for {
+		resp, err := http.Get(fmt.Sprintf("http://localhost:%d/json", port))
+		if err == nil && resp.StatusCode == 200 {
+			return nil
+		}
+		select {
+		case <-time.After(1 * time.Second):
+		case <-kiosk.ctx.Done():
+			return kiosk.ctx.Err()
+		}
+	}
+}
+
+func (kiosk *Kiosk) fetchTabs(port int) ([]map[string]interface{}, error) {
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/json", port))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var tabs []map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&tabs); err != nil {
+		return nil, err
+	}
+	return tabs, nil
+}
+
+func (kiosk *Kiosk) moveWindow(name string) {
+	window, ok := kiosk.windows[name]
+	if !ok {
+		log.Printf("[%s] No window state found for %s", name, name)
+		return
+	}
+
+	x, y := strconv.Itoa(window.Config.X), strconv.Itoa(window.Config.Y)
+
+	log.Printf("[%s] Moving window %s to %s:%s\n", name, window.WindowID, x, y)
+	err := exec.CommandContext(kiosk.ctx, "xdotool", "windowmove", window.WindowID, x, y).Run()
+	if err != nil {
+		log.Printf("[%s] Error moving window %s: %v", name, window.WindowID, err)
+	}
+}
+
+func (kiosk *Kiosk) sendFullscreen(name string) {
+	window, ok := kiosk.windows[name]
+	if !ok {
+		log.Printf("[%s] No window state found for %s", name, name)
+		return
+	}
+
+	log.Printf("[%s] Sending fullscreen to window %s\n", name, window.WindowID)
+	err := exec.CommandContext(kiosk.ctx, "xdotool", "windowactivate", window.WindowID).Run()
+	if err != nil {
+		log.Printf("[%s] Error activating window %s: %v", name, window.WindowID, err)
+	}
+
+	select {
+	case <-time.After(1000 * time.Millisecond):
+	case <-kiosk.ctx.Done():
+		log.Printf("[%s] Context done while waiting for fullscreen", name)
+		return
+	}
+
+	err = exec.CommandContext(kiosk.ctx, "xdotool", "key", "--window", window.WindowID, "F11").Run()
+	if err != nil {
+		log.Printf("[%s] Error sending fullscreen to window %s: %v", name, window.WindowID, err)
+	}
+}
+
+func (kiosk *Kiosk) portAvailable(port int) bool {
+	if !binPresent("lsof") {
+		log.Printf("lsof not found, assuming port %d is available", port)
+		return true
+	}
+
+	cmd := exec.Command("lsof", fmt.Sprintf("-iTCP:%d", port), "-sTCP:LISTEN", "-Pn")
+	return cmd.Run() != nil
+}
+
+func (kiosk *Kiosk) refreshTabAndWait(tab *TabState, name string) (bool, error) {
+	log.Printf("[%s] Refreshing tab %s\n", name, tab.URL)
+	err := kiosk.navigateTab(*tab)
+	if err != nil {
+		log.Printf("[%s] Error refreshing tab %s: %v", name, tab.ID, err)
+		return false, err
+	}
+
+	if tab.DelayAfterRefresh > 0 {
+		select {
+		case <-time.After(time.Duration(tab.DelayAfterRefresh) * time.Second):
+		case <-kiosk.ctx.Done():
+			return false, kiosk.ctx.Err()
+		}
+	}
+
+	tab.LastRefresh = time.Now().Unix()
+	log.Printf("[%s] Tab %s refreshed successfully", name, tab.URL)
+	return true, nil
+}
+
+func (kiosk *Kiosk) tabCycler(name string) {
+	kiosk.mu.Lock()
+	display, ok := kiosk.windows[name]
+	kiosk.mu.Unlock()
+
+	if !ok {
+		return
+	}
+
+	kiosk.wg.Add(1)
+	go func() {
+		defer func() {
+			userDir := userDataDir(name)
+			os.RemoveAll(userDir)
+			kiosk.wg.Done()
+		}()
+
+		for {
+			for _, tab := range display.Tabs {
+				dwell := time.Duration(tab.DwellTime) * time.Second
+
+				refreshed := false
+
+				if tab.RefreshInterval > 0 && time.Since(time.Unix(tab.LastRefresh, 0)) > time.Duration(tab.RefreshInterval)*time.Second {
+					refreshed, _ = kiosk.refreshTabAndWait(tab, name)
+				}
+
+				if !refreshed && tab.RefreshBeforeLoad {
+					refreshed, _ = kiosk.refreshTabAndWait(tab, name)
+				}
+
+				log.Printf("[%s] Activating tab %s for %v seconds", name, tab.URL, dwell.Seconds())
+				err := kiosk.activateTab(display.DebugPort, tab.ID)
+				if err != nil {
+					log.Printf("[%s] Error activating tab %s: %v", name, tab.ID, err)
+				}
+
+				if !refreshed && tab.RefreshAfterLoad {
+					kiosk.refreshTabAndWait(tab, name)
+				}
+
+				select {
+				case <-time.After(dwell):
+				case <-kiosk.ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (kiosk *Kiosk) activateTab(port int, tabID string) error {
+	_, err := http.Get(fmt.Sprintf("http://localhost:%d/json/activate/%s", port, tabID))
+	return err
+}
+
+func (kiosk *Kiosk) refreshTab(tab TabState) error {
+	requestID := kiosk.requestID.Next()
+
+	req := map[string]interface{}{
+		"id":     requestID,
+		"method": "Page.reload",
+		"params": map[string]interface{}{"ignoreCache": true},
+	}
+	return kiosk.websocketSend(tab, req)
+}
+
+func (kiosk *Kiosk) navigateTab(tab TabState) error {
+	requestID := kiosk.requestID.Next()
+
+	req := map[string]interface{}{
+		"id":     requestID,
+		"method": "Page.navigate",
+		"params": map[string]interface{}{"url": tab.URL, "ignoreCache": true},
+	}
+	return kiosk.websocketSend(tab, req)
+}
+
+func (kiosk *Kiosk) websocketSend(tab TabState, req map[string]interface{}) error {
+	if tab.WSURL == "" {
+		return errors.New("no websocket url")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, tab.WSURL, nil)
+	if err != nil {
+		return err
+	}
+	defer c.Close(websocket.StatusNormalClosure, "bye")
+
+	return wsjson.Write(ctx, c, req)
+}

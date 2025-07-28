@@ -1,0 +1,74 @@
+{{range .Displays}} {{ $displayName := .Name }}
+<div class="box">
+  <div class="field">
+    <h3>
+      {{.Name}} ({{.DebugPort}})
+      <button
+        class="button"
+        hx-post="/display/remove-form"
+        hx-vals='{"name": "{{.Name}}"}'
+        hx-target="#modal"
+        hx-swap="innerHTML"
+      >
+        <span class="icon">
+          <i class="fas fa-trash"></i>
+        </span>
+      </button>
+      <button
+        class="button"
+        hx-get="/display/edit-form?display={{.Name}}"
+        hx-target="#modal"
+        hx-swap="innerHTML"
+      >
+        <span class="icon">
+          <i class="fas fa-edit"></i>
+        </span>
+      </button>
+    </h3>
+    <p>
+      <button
+        class="button"
+        hx-get="/tab/new-form?display={{.Name}}"
+        hx-target="#modal"
+        hx-swap="innerHTML"
+      >
+        <span class="icon-text">
+          <span class="icon">
+            <i class="fas fa-plus"></i>
+          </span>
+          <span>Add Tab</span>
+        </span>
+      </button>
+    </p>
+    <p>Pos: ({{.X}}, {{.Y}}), Fullscreen: {{.Fullscreen}}</p>
+  </div>
+  <div>
+    {{range .Tabs}}
+    <div class="field">
+      <b>{{.URL}}</b> (Dwell: {{.DwellTime}})
+      <button
+        class="button"
+        hx-post="/tab/remove-form"
+        hx-vals='{"display": "{{$displayName}}", "url": "{{.URL}}"}'
+        hx-target="#modal"
+        hx-swap="innerHTML"
+      >
+        <span class="icon">
+          <i class="fas fa-trash"></i>
+        </span>
+      </button>
+      <button
+        class="button"
+        hx-get="/tab/edit-form?display={{$displayName}}&url={{.URL}}"
+        hx-target="#modal"
+        hx-swap="innerHTML"
+      >
+        <span class="icon">
+          <i class="fas fa-edit"></i>
+        </span>
+      </button>
+    </div>
+    {{end}}
+  </div>
+</div>
+{{end}}

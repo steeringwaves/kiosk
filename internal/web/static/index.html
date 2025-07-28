@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Kiosk Config</title>
+    <script src="/static/htmx-1.9.4.min.js"></script>
+    <link rel="stylesheet" href="/static/bulma.min.css" />
+    <link rel="stylesheet" href="/static/fontawesome/css/all.min.css" />
+    <style>
+      body {
+        margin: 1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="box">
+      <h1>Kiosk Config</h1>
+
+      <div class="field">
+        <button
+          class="button"
+          hx-get="/display/reload-form"
+          hx-target="#modal"
+          hx-swap="innerHTML"
+        >
+          <span class="icon-text">
+            <span class="icon">
+              <i class="fas fa-refresh"></i>
+            </span>
+            <span>Reload Display</span>
+          </span>
+        </button>
+      </div>
+
+      <div class="field">
+        <button
+          class="button"
+          hx-get="/display/new-form"
+          hx-target="#modal"
+          hx-swap="innerHTML"
+        >
+          <span class="icon-text">
+            <span class="icon">
+              <i class="fas fa-plus"></i>
+            </span>
+            <span>Add Display</span>
+          </span>
+        </button>
+      </div>
+    </div>
+
+    <div
+      id="display-list"
+      hx-get="/display/list"
+      hx-trigger="load"
+      hx-swap="innerHTML"
+    >
+      <!-- Loaded list of displays -->
+    </div>
+
+    <!-- <div id="modal"></div> -->
+    <div class="modal" id="modal-container">
+      <div class="modal-background"></div>
+      <div class="modal-content">
+        <!-- Any other Bulma elements you want -->
+        <div id="modal"></div>
+      </div>
+      <button class="modal-close is-large" aria-label="close"></button>
+    </div>
+
+    <script>
+      // Show modal (htmx will fill #modal)
+      document.body.addEventListener("htmx:afterSwap", (e) => {
+        if (e.target.id === "modal") {
+          document.getElementById("modal-container").classList.add("is-active");
+        } else {
+          // If not modal, ensure modal is hidden
+          document
+            .getElementById("modal-container")
+            .classList.remove("is-active");
+        }
+      });
+
+      // Hide modal when close button or background is clicked
+      document
+        .querySelectorAll(".modal-close, .modal-background")
+        .forEach((el) => {
+          el.addEventListener("click", () => {
+            document
+              .getElementById("modal-container")
+              .classList.remove("is-active");
+          });
+        });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,75 @@
+<form
+  class="box"
+  {{if
+  .Edit}}hx-post="/display/edit"
+  {{else}}hx-post="/display/add"
+  {{end}}
+  hx-target="#display-list"
+  hx-swap="innerHTML"
+>
+  <div class="field">
+    <h3>{{if .Edit}}Edit{{else}}Add{{end}} Display</h3>
+    <label class="label"
+      >Name: {{if .Edit}}<input
+        class="input"
+        name="Name"
+        type="text"
+        value="{{.Name}}"
+        readonly
+      />{{else}}<input
+        class="input"
+        name="Name"
+        type="text"
+        value="{{.Name}}"
+        required
+      />{{end}}</label
+    >
+  </div>
+
+  <div class="field">
+    <label class="label"
+      >Debug Port:
+      <input
+        class="input"
+        name="DebugPort"
+        type="number"
+        value="{{.DebugPort}}"
+    /></label>
+  </div>
+
+  <div class="field">
+    <label class="label"
+      >X: <input class="input" name="X" type="number" value="{{.X}}"
+    /></label>
+  </div>
+
+  <div class="field">
+    <label class="label"
+      >Y: <input class="input" name="Y" type="number" value="{{.Y}}"
+    /></label>
+  </div>
+
+  <div class="field">
+    <label class="label"
+      >Fullscreen:
+      <input
+        class="checkbox"
+        name="Fullscreen"
+        type="checkbox"
+        value="true"
+        {{if
+        .Fullscreen}}checked{{end}}
+    /></label>
+  </div>
+
+  <div class="field">
+    <button class="button" type="submit">
+      <span class="icon-text">
+        <span class="icon">
+          <i class="fas fa-save"></i>
+        </span>
+        <span>{{if .Edit}}Save{{else}}Add{{end}}</span>
+      </span>
+    </button>
+  </div>
+</form>

@@ -1,0 +1,19 @@
+<div class="box">
+  <div class="field">
+    <h3>Are you sure you want to remove the display "{{.Name}}"?</h3>
+    <button
+      class="button"
+      hx-post="/display/remove"
+      hx-vals='{"name": "{{.Name}}"}'
+      hx-target="#display-list"
+      hx-swap="innerHTML"
+    >
+      <span class="icon-text">
+        <span class="icon">
+          <i class="fas fa-check"></i>
+        </span>
+        <span>Confirm</span>
+      </span>
+    </button>
+  </div>
+</div>

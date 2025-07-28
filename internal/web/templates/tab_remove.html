@@ -1,0 +1,19 @@
+<div class="box">
+  <div class="field">
+    <h3>Are you sure you want to remove the tab "{{.URL}}" from display "{{.Display}}"?</h3>
+    <button
+      class="button"
+      hx-post="/tab/remove"
+      hx-vals='{"display": "{{.Display}}", "url": "{{.URL}}"}'
+      hx-target="#display-list"
+      hx-swap="innerHTML"
+    >
+      <span class="icon-text">
+        <span class="icon">
+          <i class="fas fa-check"></i>
+        </span>
+        <span>Confirm</span>
+      </span>
+    </button>
+  </div>
+</div>

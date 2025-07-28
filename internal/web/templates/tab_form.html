@@ -1,0 +1,101 @@
+<form
+  class="box"
+  {{if
+  .Edit}}hx-post="/tab/edit"
+  {{else}}hx-post="/tab/add"
+  {{end}}
+  hx-target="#display-list"
+  hx-swap="innerHTML"
+>
+  <div class="field">
+    <h3>
+      {{if .Edit}}Edit{{else}}Add{{end}} Tab {{if .Display}}(Display:
+      {{.Display}}){{end}}
+    </h3>
+
+    <input class="input" type="hidden" name="Display" value="{{.Display}}" />
+  </div>
+
+  <div class="field">
+    {{if .Edit}}<input
+      class="input"
+      type="hidden"
+      name="OriginalURL"
+      value="{{.Tab.URL}}"
+    />{{end}}
+
+    <label>URL: <input class="input" name="URL" value="{{.Tab.URL}}" /></label>
+  </div>
+
+  <div class="field">
+    <label class="label"
+      >Refresh Before Load:
+      <input
+        class="checkbox"
+        type="checkbox"
+        name="RefreshBeforeLoad"
+        value="true"
+        {{if
+        .Tab.RefreshBeforeLoad}}checked{{end}}
+    /></label>
+  </div>
+
+  <div class="field">
+    <label
+      >Refresh After Load:
+      <input
+        class="checkbox"
+        type="checkbox"
+        name="RefreshAfterLoad"
+        value="true"
+        {{if
+        .Tab.RefreshAfterLoad}}checked{{end}}
+    /></label>
+  </div>
+
+  <div class="field">
+    <label class="label"
+      >Refresh Interval:
+      <input
+        class="input"
+        type="number"
+        name="RefreshInterval"
+        value="{{.Tab.RefreshInterval}}"
+    /></label>
+  </div>
+
+  <div class="field">
+    <label class="label"
+      >Delay After Refresh:
+      <input
+        class="input"
+        type="number"
+        name="DelayAfterRefresh"
+        value="{{.Tab.DelayAfterRefresh}}"
+    /></label>
+  </div>
+
+  <div class="field">
+    <label class="label"
+      >Dwell Time:
+      <input
+        class="input"
+        type="number"
+        name="DwellTime"
+        value="{{.Tab.DwellTime}}"
+    /></label>
+  </div>
+  </div>
+
+  <div class="field">
+  <button class="button" type="submit">
+      <span class="icon-text">
+        <span class="icon">
+          <i class="fas fa-save"></i>
+        </span>
+        <span>{{if .Edit}}Save{{else}}Add{{end}}</span>
+      </span>
+
+  </button>
+  </div>
+</form>
