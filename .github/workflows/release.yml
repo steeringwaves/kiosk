@@ -28,6 +28,12 @@ jobs:
           mkdir -p bin
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 go build -o bin/kiosk-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/kiosk
 
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: kiosk-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: bin/kiosk-${{ matrix.goos }}-${{ matrix.goarch }}
+
   release:
     needs: build
     runs-on: ubuntu-latest
