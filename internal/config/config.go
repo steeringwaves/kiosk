@@ -22,12 +22,21 @@ type TabConfig struct {
 	DwellTime         int    `json:"DwellTime" yaml:"dwellTime"`
 }
 
+type ExecConfig struct {
+	Command             string   `json:"Command" yaml:"command"`
+	Args                []string `json:"Args" yaml:"args"` // Arguments for the command
+	WindowSearch        string   `json:"WindowSearch" yaml:"windowSearch"`
+	DelayBeforeSendKeys int      `json:"DelayBeforeSendKeys" yaml:"delayBeforeSendKeys"` // Delay before sending keys after command execution
+	SendKeys            []string `json:"SendKeys" yaml:"sendKeys"`                       // List of keys to send after the command is executed
+}
+
 type DisplayConfig struct {
 	Name       string      `json:"Name" yaml:"name"`
 	DebugPort  int         `json:"DebugPort" yaml:"debugPort"`
 	X          int         `json:"X" yaml:"x"`
 	Y          int         `json:"Y" yaml:"y"`
 	Fullscreen bool        `json:"Fullscreen" yaml:"fullscreen"`
+	Exec       ExecConfig  `json:"Exec" yaml:"exec"`
 	Tabs       []TabConfig `json:"Tabs" yaml:"tabs"`
 }
 

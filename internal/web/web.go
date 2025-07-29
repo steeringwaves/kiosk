@@ -81,6 +81,7 @@ func (kiosk *KioskWeb) displayAddForm(w http.ResponseWriter, r *http.Request) {
 		Name       string
 		X, Y       int
 		Fullscreen bool
+		Exec       config.ExecConfig
 	}{
 		DebugPort:  kiosk.cfg.NextDebugPort(),
 		Name:       kiosk.cfg.NextDisplayName(),
@@ -88,6 +89,11 @@ func (kiosk *KioskWeb) displayAddForm(w http.ResponseWriter, r *http.Request) {
 		Y:          0,
 		Fullscreen: false,
 		Edit:       false,
+		Exec: config.ExecConfig{
+			Command:      "",
+			Args:         []string{},
+			WindowSearch: "",
+		},
 	})
 	if err != nil {
 		log.Printf("Error rendering template: %v", err)
@@ -115,6 +121,7 @@ func (kiosk *KioskWeb) displayEditForm(w http.ResponseWriter, r *http.Request) {
 		Name       string
 		X, Y       int
 		Fullscreen bool
+		Exec       config.ExecConfig
 	}{
 		DebugPort:  kiosk.cfg.Displays[idx].DebugPort,
 		Name:       kiosk.cfg.Displays[idx].Name,
@@ -122,6 +129,7 @@ func (kiosk *KioskWeb) displayEditForm(w http.ResponseWriter, r *http.Request) {
 		Y:          kiosk.cfg.Displays[idx].Y,
 		Fullscreen: kiosk.cfg.Displays[idx].Fullscreen,
 		Edit:       true,
+		Exec:       kiosk.cfg.Displays[idx].Exec,
 	})
 	if err != nil {
 		log.Printf("Error rendering template: %v", err)
@@ -159,6 +167,11 @@ func (kiosk *KioskWeb) displayAdd(w http.ResponseWriter, r *http.Request) {
 
 	kiosk.cfg.Displays = append(kiosk.cfg.Displays, newDisplay)
 
+	err := kiosk.cfg.Save(kiosk.options.ConfigFile)
+	if err != nil {
+		log.Printf("Error saving config: %v", err)
+	}
+
 	mu.Unlock()
 
 	kiosk.getDisplayList(w, r)
@@ -181,11 +194,23 @@ func (kiosk *KioskWeb) displayEdit(w http.ResponseWriter, r *http.Request) {
 	kiosk.cfg.Displays[idx].X = parseFormInt(r, "X")
 	kiosk.cfg.Displays[idx].Y = parseFormInt(r, "Y")
 	kiosk.cfg.Displays[idx].Fullscreen = r.FormValue("Fullscreen") == "true"
+	kiosk.cfg.Displays[idx].Exec = config.ExecConfig{
+		Command:             r.FormValue("Exec.Command"),
+		Args:                r.Form["Exec.Args"],
+		WindowSearch:        r.FormValue("Exec.WindowSearch"),
+		DelayBeforeSendKeys: parseFormInt(r, "Exec.DelayBeforeSendKeys"),
+		SendKeys:            r.Form["Exec.SendKeys"],
+	}
 
 	if kiosk.options.Parent != nil {
 		if err := kiosk.options.Parent.EditDisplay(kiosk.cfg.Displays[idx]); err != nil {
 			log.Printf("Error editing display: %v", err)
 		}
+	}
+
+	err := kiosk.cfg.Save(kiosk.options.ConfigFile)
+	if err != nil {
+		log.Printf("Error saving config: %v", err)
 	}
 
 	mu.Unlock()
@@ -227,6 +252,11 @@ func (kiosk *KioskWeb) displayRemove(w http.ResponseWriter, r *http.Request) {
 		kiosk.cfg.Displays = append(kiosk.cfg.Displays[:idx], kiosk.cfg.Displays[idx+1:]...)
 	}
 
+	err := kiosk.cfg.Save(kiosk.options.ConfigFile)
+	if err != nil {
+		log.Printf("Error saving config: %v", err)
+	}
+
 	mu.Unlock()
 
 	kiosk.getDisplayList(w, r)
@@ -249,6 +279,11 @@ func (kiosk *KioskWeb) tabAdd(w http.ResponseWriter, r *http.Request) {
 			})
 			break
 		}
+	}
+
+	err := kiosk.cfg.Save(kiosk.options.ConfigFile)
+	if err != nil {
+		log.Printf("Error saving config: %v", err)
 	}
 
 	mu.Unlock()
@@ -440,6 +475,11 @@ func (kiosk *KioskWeb) tabRemove(w http.ResponseWriter, r *http.Request) {
 			kiosk.cfg.Displays[idx].Tabs = append(kiosk.cfg.Displays[idx].Tabs[:j], kiosk.cfg.Displays[idx].Tabs[j+1:]...)
 			break
 		}
+	}
+
+	err := kiosk.cfg.Save(kiosk.options.ConfigFile)
+	if err != nil {
+		log.Printf("Error saving config: %v", err)
 	}
 
 	mu.Unlock()

@@ -41,48 +41,62 @@ dwellTime: 30
 debugPort: 0
 newWindowSize: 1024,768
 displays:
-    - name: Display0
-      debugPort: 9300
-      x: 90
-      y: 200
-      fullscreen: false
-      tabs:
-        - url: google.com
-          refreshBeforeLoad: false
-          refreshAfterLoad: false
-          refreshInterval: 30
-          delayAfterRefresh: 3
-          dwellTime: 5
-        - url: duckduckgo.com
-          refreshBeforeLoad: false
-          refreshAfterLoad: false
-          refreshInterval: 30
-          delayAfterRefresh: 3
-          dwellTime: 5
-    - name: Display1
-      debugPort: 9301
-      x: 1200
-      y: 600
-      fullscreen: true
-      tabs:
-        - url: https://www.wpc.ncep.noaa.gov//noaa/noaa.gif
-          refreshBeforeLoad: false
-          refreshAfterLoad: false
-          refreshInterval: 600
-          delayAfterRefresh: 0
-          dwellTime: 30
-        - url: https://www.wpc.ncep.noaa.gov/basicwx/day0-7loop.html
-          refreshBeforeLoad: false
-          refreshAfterLoad: false
-          refreshInterval: 600
-          delayAfterRefresh: 0
-          dwellTime: 30
-        - url: https://time.gov
-          refreshBeforeLoad: false
-          refreshAfterLoad: false
-          refreshInterval: 600
-          delayAfterRefresh: 0
-          dwellTime: 30
+  - name: Display0
+    debugPort: 9300
+    x: 90
+    y: 200
+    fullscreen: false
+    tabs:
+      - url: google.com
+        refreshBeforeLoad: false
+        refreshAfterLoad: false
+        refreshInterval: 30
+        delayAfterRefresh: 3
+        dwellTime: 5
+      - url: duckduckgo.com
+        refreshBeforeLoad: false
+        refreshAfterLoad: false
+        refreshInterval: 30
+        delayAfterRefresh: 3
+        dwellTime: 5
+  - name: Display1
+    debugPort: 9301
+    x: 1200
+    y: 600
+    fullscreen: true
+    tabs:
+      - url: https://www.wpc.ncep.noaa.gov//noaa/noaa.gif
+        refreshBeforeLoad: false
+        refreshAfterLoad: false
+        refreshInterval: 600
+        delayAfterRefresh: 0
+        dwellTime: 30
+      - url: https://www.wpc.ncep.noaa.gov/basicwx/day0-7loop.html
+        refreshBeforeLoad: false
+        refreshAfterLoad: false
+        refreshInterval: 600
+        delayAfterRefresh: 0
+        dwellTime: 30
+      - url: https://time.gov
+        refreshBeforeLoad: false
+        refreshAfterLoad: false
+        refreshInterval: 600
+        delayAfterRefresh: 0
+        dwellTime: 30
+  - name: Display2
+    x: 5455
+    y: 200
+    exec:
+      command: gnome-terminal
+      args:
+        - --
+        - bash
+        - -c
+        - btop
+      windowSearch: "Terminal"
+      delayBeforeSendKeys: 1
+      sendKeys:
+        - F11
 ```
 
 ### Top-level
@@ -96,8 +110,9 @@ displays:
 - name: Logical name of the display (must be unique)
 - debugPort: Remote debug port (required and must be unique per display)
 - x, y: X/Y position of the Chromium window
-- fullscreen: If true, launches window in fullscreen mode
+- fullscreen: If true, launches window and subsequently issues "F11" after
 - tabs[]: List of tabs to cycle through
+- exec: Custom launch item (not chromium)
 
 ### tabs[]
 
@@ -107,6 +122,14 @@ displays:
 - refreshInterval: Seconds between auto-refreshes before (0 = disable) **NOTE: The refresh will happen prior to activating tab with this method**
 - delayAfterRefresh: Seconds to wait after refreshing before activating this tab
 - dwellTime: Optional override of top-level dwell time
+
+### exec
+
+- command: Command to launch (e.g. gnome-terminal)
+- args: Arguments to pass to launched command
+- windowSearch: Search name for launched command (used by xdotool search)
+- sendKeys: Array of keys to send to launched window
+- delayBeforeSendKeys: Delay in seconds before sending keys to window
 
 ## Building locally
 

@@ -1,3 +1,39 @@
+<script>
+  function addArgField() {
+    const argsList = document.getElementById("args-list");
+    const field = document.createElement("div");
+    field.className = "field is-grouped";
+    field.innerHTML = `
+      <div class="control is-expanded">
+        <input class="input" type="text" name="Exec.Args" placeholder="Argument" />
+      </div>
+      <div class="control">
+        <button class="button is-danger" type="button" onclick="this.closest('.field').remove()">
+          Remove
+        </button>
+      </div>
+    `;
+    argsList.appendChild(field);
+  }
+
+  function addSendKeyField() {
+    const keyList = document.getElementById("sendkeys-list");
+    const field = document.createElement("div");
+    field.className = "field is-grouped";
+    field.innerHTML = `
+      <div class="control is-expanded">
+        <input class="input" type="text" name="Exec.SendKeys" placeholder="Key" />
+      </div>
+      <div class="control">
+        <button class="button is-danger" type="button" onclick="this.closest('.field').remove()">
+          Remove
+        </button>
+      </div>
+    `;
+    keyList.appendChild(field);
+  }
+</script>
+
 <form
   class="box"
   {{if
@@ -60,6 +96,113 @@
         {{if
         .Fullscreen}}checked{{end}}
     /></label>
+  </div>
+
+  <div class="field">
+    <label class="label">Exec Command:</label>
+    <div class="control">
+      <input
+        class="input"
+        name="Exec.Command"
+        type="text"
+        value="{{.Exec.Command}}"
+        placeholder="e.g., gnome-terminal"
+      />
+    </div>
+  </div>
+
+  <div class="field">
+    <label class="label">Exec Arguments:</label>
+    <div id="args-list">
+      {{range $i, $arg := .Exec.Args}}
+      <div class="field is-grouped">
+        <div class="control is-expanded">
+          <input
+            class="input"
+            type="text"
+            name="Exec.Args"
+            value="{{$arg}}"
+            placeholder="Argument {{$i}}"
+          />
+        </div>
+        <div class="control">
+          <button
+            class="button is-danger"
+            type="button"
+            hx-on="click: this.closest('.field').remove()"
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+      {{end}}
+    </div>
+    <div class="control mt-2">
+      <button class="button is-link" type="button" onclick="addArgField()">
+        Add Argument
+      </button>
+    </div>
+  </div>
+
+  <div class="field">
+    <label class="label">Window Search:</label>
+    <div class="control">
+      <input
+        class="input"
+        name="Exec.WindowSearch"
+        type="text"
+        value="{{.Exec.WindowSearch}}"
+        placeholder="e.g., Terminal"
+      />
+    </div>
+  </div>
+
+  <div class="field">
+    <label class="label">Delay Before Send Keys (seconds):</label>
+    <div class="control">
+      <input
+        class="input"
+        name="Exec.DelayBeforeSendKeys"
+        type="number"
+        min="0"
+        step="1"
+        value="{{.Exec.DelayBeforeSendKeys}}"
+        placeholder="e.g., 1"
+      />
+    </div>
+  </div>
+
+  <div class="field">
+    <label class="label">Send Keys:</label>
+    <div id="sendkeys-list">
+      {{range $i, $key := .Exec.SendKeys}}
+      <div class="field is-grouped">
+        <div class="control is-expanded">
+          <input
+            class="input"
+            type="text"
+            name="Exec.SendKeys"
+            value="{{$key}}"
+            placeholder="Key {{$i}}"
+          />
+        </div>
+        <div class="control">
+          <button
+            class="button is-danger"
+            type="button"
+            onclick="this.closest('.field').remove()"
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+      {{end}}
+    </div>
+    <div class="control mt-2">
+      <button class="button is-link" type="button" onclick="addSendKeyField()">
+        Add Key
+      </button>
+    </div>
   </div>
 
   <div class="field">

@@ -158,7 +158,6 @@ func (e *KioskWeb) ReloadDisplays() error {
 }
 
 func main() {
-
 	ensureDeps([]string{"xdotool", "chromium"})
 
 	kiosk := NewKiosk()
@@ -166,7 +165,6 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ctxHandler(ctx, cancel)
-	defer cancel()
 
 	// Start the web UI
 	portStr := os.Getenv("PORT")
@@ -195,28 +193,84 @@ func main() {
 	kiosk.Run(ctx)
 
 	<-ctx.Done()
-	os.Exit(0)
+	go func() {
+		time.Sleep(2 * time.Second)
+		os.Exit(0)
+	}()
+
+	kiosk.Stop()
 }
 
 func (kiosk *Kiosk) Run(ctx context.Context) error {
 	kiosk.ctx, kiosk.cancel = context.WithCancel(ctx)
 
+	defer func() {
+		for _, display := range kiosk.cfg.Displays {
+			kiosk.CloseWindow(display.Name)
+		}
+	}()
+
 	for _, display := range kiosk.cfg.Displays {
+		if display.Exec.Command != "" {
+			kiosk.launchCustom(display.Name)
+			if kiosk.ctx.Err() != nil {
+				return kiosk.ctx.Err()
+			}
+			continue
+		}
+
+		if len(display.Tabs) == 0 {
+			continue
+		}
+
 		kiosk.launchChrome(display.Name)
+		if kiosk.ctx.Err() != nil {
+			return kiosk.ctx.Err()
+		}
 	}
 
 	for _, display := range kiosk.cfg.Displays {
 		kiosk.moveWindow(display.Name)
+		if kiosk.ctx.Err() != nil {
+			return kiosk.ctx.Err()
+		}
 	}
 
 	for _, display := range kiosk.cfg.Displays {
 		if display.Fullscreen {
 			kiosk.sendFullscreen(display.Name)
+			if kiosk.ctx.Err() != nil {
+				return kiosk.ctx.Err()
+			}
+		}
+
+		for _, key := range display.Exec.SendKeys {
+			if key == "" {
+				continue
+			}
+
+			delay := time.Duration(display.Exec.DelayBeforeSendKeys) * time.Second
+			kiosk.SendKeyToWindow(display.Name, key, delay)
+			if kiosk.ctx.Err() != nil {
+				return kiosk.ctx.Err()
+			}
 		}
 	}
 
 	for _, display := range kiosk.cfg.Displays {
+		if display.Exec.Command != "" {
+			kiosk.execCycle(display.Name)
+			continue
+		}
+
+		if len(display.Tabs) == 0 {
+			continue
+		}
+
 		kiosk.tabCycler(display.Name)
+		if kiosk.ctx.Err() != nil {
+			return kiosk.ctx.Err()
+		}
 	}
 
 	kiosk.wg.Wait()
@@ -286,9 +340,89 @@ func (kiosk *Kiosk) loadConfig() {
 	}
 }
 
-func (kiosk *Kiosk) getLatestWindowID(name string) (string, error) {
-	// Run `xdotool search --onlyvisible --name chromium`
-	out, err := exec.Command("xdotool", "search", "--onlyvisible", "--name", "chromium").Output()
+func (kiosk *Kiosk) xdotoolSearchVisible(searchName string) ([]string, error) {
+	if searchName == "" {
+		searchName = ".*" // Default to all visible windows
+	}
+
+	out, err := exec.Command("xdotool", "search", "--onlyvisible", "--name", searchName).Output()
+	if err != nil {
+		return []string{}, nil
+	}
+
+	// Split the output into window IDs
+	winIDs := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(winIDs) == 0 || winIDs[0] == "" {
+		return []string{}, nil
+	}
+
+	// Find a unique ID that is not already in use
+	result := make([]string, 0)
+	for _, id := range winIDs {
+		if id == "" {
+			continue
+		}
+
+		// ensure the ID is a number
+		if _, err := strconv.Atoi(id); err != nil {
+			continue
+		}
+
+		result = append(result, id)
+	}
+
+	return result, nil
+}
+
+func (kiosk *Kiosk) xdotoolFindLatestWindowID(name string, beforeExecIDs []string, afterExecIDs []string) (string, error) {
+	if len(afterExecIDs) == 0 {
+		return "", fmt.Errorf("[%s] No visible windows found", name)
+	}
+
+	// Filter out IDs that were already in use before the exec
+	winIDs := []string{}
+	for _, id := range afterExecIDs {
+		found := false
+		for _, beforeID := range beforeExecIDs {
+			if id == beforeID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			winIDs = append(winIDs, id)
+		}
+	}
+
+	if len(winIDs) == 0 {
+		return "", fmt.Errorf("[%s] No new window found after exec", name)
+	}
+
+	// Gather existing IDs
+	existing := make(map[string]bool)
+	for _, w := range kiosk.windows {
+		if w.WindowID != "" {
+			existing[w.WindowID] = true
+		}
+	}
+
+	// Find a unique ID that is not already in use
+	for _, id := range winIDs {
+		if !existing[id] {
+			log.Printf("[%s] Opened window %s", name, id)
+			return id, nil
+		}
+	}
+
+	return winIDs[len(winIDs)-1], nil
+}
+
+func (kiosk *Kiosk) getLatestWindowID(name string, searchName string) (string, error) {
+	if searchName == "" {
+		searchName = "chromium"
+	}
+
+	out, err := exec.Command("xdotool", "search", "--onlyvisible", "--name", searchName).Output()
 	if err != nil {
 		return "", fmt.Errorf("[%s] Could not find window: %w", name, err)
 	}
@@ -319,15 +453,73 @@ func (kiosk *Kiosk) getLatestWindowID(name string) (string, error) {
 	return "", fmt.Errorf("[%s] No unique window ID found", name)
 }
 
-func userDataDir(name string) string {
+func (kiosk *Kiosk) launchCustom(name string) {
+	kiosk.mu.Lock()
+	window, ok := kiosk.windows[name]
+	kiosk.mu.Unlock()
+
+	if !ok {
+		return
+	}
+
+	originalWinIDs, err := kiosk.xdotoolSearchVisible(window.Config.Exec.WindowSearch)
+	if err != nil {
+		log.Printf("[%s] Error searching for visible windows: %v", name, err)
+		return
+	}
+
+	log.Printf("[%s] Launching custom command: %s with args: %v", name, window.Config.Exec.Command, window.Config.Exec.Args)
+
+	cmd := exec.CommandContext(kiosk.ctx, window.Config.Exec.Command, window.Config.Exec.Args...)
+	cmd.Stdout = nil
+	err = cmd.Start()
+	if err != nil {
+		log.Printf("[%s] Error starting command: %v", name, err)
+		return
+	}
+
+	firstRun := true
+	for {
+		if !firstRun {
+			select {
+			case <-time.After(time.Second):
+			case <-kiosk.ctx.Done():
+				return
+			}
+		}
+		firstRun = false
+
+		winIDs, err := kiosk.xdotoolSearchVisible(window.Config.Exec.WindowSearch)
+		if err != nil {
+			log.Printf("[%s] Error searching for visible windows: %v", name, err)
+			continue
+		}
+
+		if len(winIDs) == 0 {
+			log.Printf("[%s] No visible windows found for %s", name, window.Config.Exec.WindowSearch)
+			continue
+		}
+
+		winID, err := kiosk.xdotoolFindLatestWindowID(name, originalWinIDs, winIDs)
+		if err != nil {
+			log.Printf("[%s] Error finding latest window ID: %v", name, err)
+			continue
+		}
+
+		window.WindowID = winID
+		break
+	}
+}
+
+func chromiumUserDataDir(name string) string {
 	return fmt.Sprintf("/tmp/.kiosk-chrome-user-data-%s", name)
 }
 
 func (kiosk *Kiosk) launchChrome(name string) {
 	kiosk.mu.Lock()
-	defer kiosk.mu.Unlock()
-
 	window, ok := kiosk.windows[name]
+	kiosk.mu.Unlock()
+
 	if !ok {
 		return
 	}
@@ -336,7 +528,7 @@ func (kiosk *Kiosk) launchChrome(name string) {
 	if port == 0 {
 		port = kiosk.cfg.DebugPort
 	}
-	userDir := userDataDir(name)
+	userDir := chromiumUserDataDir(name)
 	os.RemoveAll(userDir)
 	os.MkdirAll(userDir, 0755)
 
@@ -359,20 +551,53 @@ func (kiosk *Kiosk) launchChrome(name string) {
 		"--new-window",
 		url,
 	}
+
+	originalWinIDs, err := kiosk.xdotoolSearchVisible("chromium")
+	if err != nil {
+		log.Printf("[%s] Error searching for visible windows: %v", name, err)
+		return
+	}
+
 	cmd := exec.CommandContext(kiosk.ctx, "chromium", args...)
 	cmd.Stderr = nil
 	_ = cmd.Start()
 
-	err := kiosk.waitForDebugger(name, port)
+	err = kiosk.waitForDebugger(name, port)
 	if err != nil {
 		log.Fatalf("[%s] Failed to wait for debugger: %v", name, err)
 	}
 
-	winID, err := kiosk.getLatestWindowID(name)
-	if err != nil {
-		log.Fatalf("[%s] Failed to get latest window ID: %v", name, err)
+	firstRun := true
+	for {
+		if !firstRun {
+			select {
+			case <-time.After(250 * time.Millisecond):
+			case <-kiosk.ctx.Done():
+				return
+			}
+			firstRun = false
+		}
+
+		winIDs, err := kiosk.xdotoolSearchVisible("chromium")
+		if err != nil {
+			log.Printf("[%s] Error searching for visible windows: %v", name, err)
+			continue
+		}
+
+		if len(winIDs) == 0 {
+			log.Printf("[%s] No visible windows found for %s", name, "chromium")
+			continue
+		}
+
+		winID, err := kiosk.xdotoolFindLatestWindowID(name, originalWinIDs, winIDs)
+		if err != nil {
+			log.Printf("[%s] Error finding latest window ID: %v", name, err)
+			continue
+		}
+
+		window.WindowID = winID
+		break
 	}
-	window.WindowID = winID
 
 	// Fetch tabs
 	err = kiosk.waitForTabID(name, port, window, 0)
@@ -487,39 +712,63 @@ func (kiosk *Kiosk) moveWindow(name string) {
 		return
 	}
 
+	log.Printf("[%s] Activating window %s\n", name, window.WindowID)
+	err := exec.CommandContext(kiosk.ctx, "xdotool", "windowactivate", window.WindowID).Run()
+	if err != nil {
+		log.Printf("[%s] Error activating window %s: %v", name, window.WindowID, err)
+	}
+
 	x, y := strconv.Itoa(window.Config.X), strconv.Itoa(window.Config.Y)
 
 	log.Printf("[%s] Moving window %s to %s:%s\n", name, window.WindowID, x, y)
-	err := exec.CommandContext(kiosk.ctx, "xdotool", "windowmove", window.WindowID, x, y).Run()
+	err = exec.CommandContext(kiosk.ctx, "xdotool", "windowmove", window.WindowID, x, y).Run()
 	if err != nil {
 		log.Printf("[%s] Error moving window %s: %v", name, window.WindowID, err)
 	}
 }
 
-func (kiosk *Kiosk) sendFullscreen(name string) {
+func (kiosk *Kiosk) SendKeyToWindow(name string, key string, delayBeforeSending time.Duration) {
 	window, ok := kiosk.windows[name]
 	if !ok {
 		log.Printf("[%s] No window state found for %s", name, name)
 		return
 	}
 
-	log.Printf("[%s] Sending fullscreen to window %s\n", name, window.WindowID)
+	select {
+	case <-time.After(delayBeforeSending):
+	case <-kiosk.ctx.Done():
+		return
+	}
+
+	log.Printf("[%s] Activating window %s\n", name, window.WindowID)
 	err := exec.CommandContext(kiosk.ctx, "xdotool", "windowactivate", window.WindowID).Run()
 	if err != nil {
 		log.Printf("[%s] Error activating window %s: %v", name, window.WindowID, err)
 	}
 
-	select {
-	case <-time.After(1000 * time.Millisecond):
-	case <-kiosk.ctx.Done():
-		log.Printf("[%s] Context done while waiting for fullscreen", name)
+	log.Printf("[%s] Sending %s to window %s\n", name, key, window.WindowID)
+	err = exec.CommandContext(kiosk.ctx, "xdotool", "key", "--window", window.WindowID, key).Run()
+	if err != nil {
+		log.Printf("[%s] Error sending %s to window %s: %v", name, key, window.WindowID, err)
+	}
+}
+
+func (kiosk *Kiosk) CloseWindow(name string) {
+	window, ok := kiosk.windows[name]
+	if !ok {
+		log.Printf("[%s] No window state found for %s", name, name)
 		return
 	}
 
-	err = exec.CommandContext(kiosk.ctx, "xdotool", "key", "--window", window.WindowID, "F11").Run()
+	log.Printf("[%s] Closing window %s\n", name, window.WindowID)
+	err := exec.Command("xdotool", "windowclose", window.WindowID).Run()
 	if err != nil {
-		log.Printf("[%s] Error sending fullscreen to window %s: %v", name, window.WindowID, err)
+		log.Printf("[%s] Error closing window %s: %v", name, window.WindowID, err)
 	}
+}
+
+func (kiosk *Kiosk) sendFullscreen(name string) {
+	kiosk.SendKeyToWindow(name, "F11", time.Second)
 }
 
 func (kiosk *Kiosk) portAvailable(port int) bool {
@@ -534,7 +783,7 @@ func (kiosk *Kiosk) portAvailable(port int) bool {
 
 func (kiosk *Kiosk) refreshTabAndWait(tab *TabState, name string) (bool, error) {
 	log.Printf("[%s] Refreshing tab %s\n", name, tab.URL)
-	err := kiosk.navigateTab(*tab)
+	err := kiosk.navigateChromeTab(*tab)
 	if err != nil {
 		log.Printf("[%s] Error refreshing tab %s: %v", name, tab.ID, err)
 		return false, err
@@ -553,6 +802,25 @@ func (kiosk *Kiosk) refreshTabAndWait(tab *TabState, name string) (bool, error) 
 	return true, nil
 }
 
+func (kiosk *Kiosk) execCycle(name string) {
+	kiosk.mu.Lock()
+	_, ok := kiosk.windows[name]
+	kiosk.mu.Unlock()
+
+	if !ok {
+		return
+	}
+
+	kiosk.wg.Add(1)
+	go func() {
+		defer func() {
+			kiosk.wg.Done()
+		}()
+
+		<-kiosk.ctx.Done()
+	}()
+}
+
 func (kiosk *Kiosk) tabCycler(name string) {
 	kiosk.mu.Lock()
 	display, ok := kiosk.windows[name]
@@ -565,7 +833,7 @@ func (kiosk *Kiosk) tabCycler(name string) {
 	kiosk.wg.Add(1)
 	go func() {
 		defer func() {
-			userDir := userDataDir(name)
+			userDir := chromiumUserDataDir(name)
 			os.RemoveAll(userDir)
 			kiosk.wg.Done()
 		}()
@@ -585,7 +853,7 @@ func (kiosk *Kiosk) tabCycler(name string) {
 				}
 
 				log.Printf("[%s] Activating tab %s for %v seconds", name, tab.URL, dwell.Seconds())
-				err := kiosk.activateTab(display.DebugPort, tab.ID)
+				err := kiosk.activateChromeTab(display.DebugPort, tab.ID)
 				if err != nil {
 					log.Printf("[%s] Error activating tab %s: %v", name, tab.ID, err)
 				}
@@ -604,12 +872,12 @@ func (kiosk *Kiosk) tabCycler(name string) {
 	}()
 }
 
-func (kiosk *Kiosk) activateTab(port int, tabID string) error {
+func (kiosk *Kiosk) activateChromeTab(port int, tabID string) error {
 	_, err := http.Get(fmt.Sprintf("http://localhost:%d/json/activate/%s", port, tabID))
 	return err
 }
 
-func (kiosk *Kiosk) refreshTab(tab TabState) error {
+func (kiosk *Kiosk) refreshChromeTab(tab TabState) error {
 	requestID := kiosk.requestID.Next()
 
 	req := map[string]interface{}{
@@ -617,10 +885,10 @@ func (kiosk *Kiosk) refreshTab(tab TabState) error {
 		"method": "Page.reload",
 		"params": map[string]interface{}{"ignoreCache": true},
 	}
-	return kiosk.websocketSend(tab, req)
+	return kiosk.chromeWebsocketSend(tab, req)
 }
 
-func (kiosk *Kiosk) navigateTab(tab TabState) error {
+func (kiosk *Kiosk) navigateChromeTab(tab TabState) error {
 	requestID := kiosk.requestID.Next()
 
 	req := map[string]interface{}{
@@ -628,10 +896,10 @@ func (kiosk *Kiosk) navigateTab(tab TabState) error {
 		"method": "Page.navigate",
 		"params": map[string]interface{}{"url": tab.URL, "ignoreCache": true},
 	}
-	return kiosk.websocketSend(tab, req)
+	return kiosk.chromeWebsocketSend(tab, req)
 }
 
-func (kiosk *Kiosk) websocketSend(tab TabState, req map[string]interface{}) error {
+func (kiosk *Kiosk) chromeWebsocketSend(tab TabState, req map[string]interface{}) error {
 	if tab.WSURL == "" {
 		return errors.New("no websocket url")
 	}
