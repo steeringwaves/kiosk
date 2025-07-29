@@ -734,16 +734,16 @@ func (kiosk *Kiosk) SendKeyToWindow(name string, key string, delayBeforeSending 
 		return
 	}
 
-	log.Printf("[%s] Activating window %s\n", name, window.WindowID)
-	err := exec.CommandContext(kiosk.ctx, "xdotool", "windowactivate", window.WindowID).Run()
-	if err != nil {
-		log.Printf("[%s] Error activating window %s: %v", name, window.WindowID, err)
-	}
-
 	select {
 	case <-time.After(delayBeforeSending):
 	case <-kiosk.ctx.Done():
 		return
+	}
+
+	log.Printf("[%s] Activating window %s\n", name, window.WindowID)
+	err := exec.CommandContext(kiosk.ctx, "xdotool", "windowactivate", window.WindowID).Run()
+	if err != nil {
+		log.Printf("[%s] Error activating window %s: %v", name, window.WindowID, err)
 	}
 
 	log.Printf("[%s] Sending %s to window %s\n", name, key, window.WindowID)
