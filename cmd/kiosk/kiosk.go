@@ -542,6 +542,7 @@ func (kiosk *Kiosk) launchChrome(name string) {
 		fmt.Sprintf("--window-size=%s", kiosk.cfg.NewWindowSize),
 		fmt.Sprintf("--remote-debugging-port=%d", port),
 		fmt.Sprintf("--remote-allow-origins=http://localhost:%d", port),
+		"--password-store=basic", // Use basic password store to disable GNOME Keyring prompts
 		"--disable-session-crashed-bubble",
 		"--disable-session-restore",
 		"--disable-infobars",
