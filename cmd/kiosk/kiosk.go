@@ -455,9 +455,9 @@ func (kiosk *Kiosk) getLatestWindowID(name string, searchName string) (string, e
 
 func (kiosk *Kiosk) launchCustom(name string) {
 	kiosk.mu.Lock()
-	defer kiosk.mu.Unlock()
-
 	window, ok := kiosk.windows[name]
+	kiosk.mu.Unlock()
+
 	if !ok {
 		return
 	}
@@ -517,9 +517,9 @@ func chromiumUserDataDir(name string) string {
 
 func (kiosk *Kiosk) launchChrome(name string) {
 	kiosk.mu.Lock()
-	defer kiosk.mu.Unlock()
-
 	window, ok := kiosk.windows[name]
+	kiosk.mu.Unlock()
+
 	if !ok {
 		return
 	}
