@@ -202,6 +202,15 @@ func (kiosk *Kiosk) Run(ctx context.Context) error {
 	kiosk.ctx, kiosk.cancel = context.WithCancel(ctx)
 
 	for _, display := range kiosk.cfg.Displays {
+		if display.Exec.Command != "" {
+			kiosk.launchCustom(display.Name)
+			continue
+		}
+
+		if len(display.Tabs) == 0 {
+			continue
+		}
+
 		kiosk.launchChrome(display.Name)
 	}
 
@@ -213,9 +222,26 @@ func (kiosk *Kiosk) Run(ctx context.Context) error {
 		if display.Fullscreen {
 			kiosk.sendFullscreen(display.Name)
 		}
+
+		for _, key := range display.Exec.SendKeys {
+			if key == "" {
+				continue
+			}
+
+			delay := time.Duration(display.Exec.DelayBeforeSendKeys) * time.Second
+			kiosk.SendKeyToWindow(display.Name, key, delay)
+		}
 	}
 
 	for _, display := range kiosk.cfg.Displays {
+		if display.Exec.Command != "" {
+			continue
+		}
+
+		if len(display.Tabs) == 0 {
+			continue
+		}
+
 		kiosk.tabCycler(display.Name)
 	}
 
@@ -286,9 +312,89 @@ func (kiosk *Kiosk) loadConfig() {
 	}
 }
 
-func (kiosk *Kiosk) getLatestWindowID(name string) (string, error) {
-	// Run `xdotool search --onlyvisible --name chromium`
-	out, err := exec.Command("xdotool", "search", "--onlyvisible", "--name", "chromium").Output()
+func (kiosk *Kiosk) xdotoolSearchVisible(searchName string) ([]string, error) {
+	if searchName == "" {
+		searchName = "chromium"
+	}
+
+	out, err := exec.Command("xdotool", "search", "--onlyvisible", "--name", searchName).Output()
+	if err != nil {
+		return []string{}, nil
+	}
+
+	// Split the output into window IDs
+	winIDs := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(winIDs) == 0 || winIDs[0] == "" {
+		return []string{}, nil
+	}
+
+	// Find a unique ID that is not already in use
+	result := make([]string, 0)
+	for _, id := range winIDs {
+		if id == "" {
+			continue
+		}
+
+		// ensure the ID is a number
+		if _, err := strconv.Atoi(id); err != nil {
+			continue
+		}
+
+		result = append(result, id)
+	}
+
+	return result, nil
+}
+
+func (kiosk *Kiosk) xdotoolFindLatestWindowID(name string, beforeExecIDs []string, afterExecIDs []string) (string, error) {
+	if len(afterExecIDs) == 0 {
+		return "", fmt.Errorf("[%s] No visible windows found", name)
+	}
+
+	// Filter out IDs that were already in use before the exec
+	winIDs := []string{}
+	for _, id := range afterExecIDs {
+		found := false
+		for _, beforeID := range beforeExecIDs {
+			if id == beforeID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			winIDs = append(winIDs, id)
+		}
+	}
+
+	if len(winIDs) == 0 {
+		return "", fmt.Errorf("[%s] No new window found after exec", name)
+	}
+
+	// Gather existing IDs
+	existing := make(map[string]bool)
+	for _, w := range kiosk.windows {
+		if w.WindowID != "" {
+			existing[w.WindowID] = true
+		}
+	}
+
+	// Find a unique ID that is not already in use
+	for _, id := range winIDs {
+		if !existing[id] {
+			log.Printf("[%s] Opened window %s", name, id)
+			return id, nil
+		}
+	}
+
+	return winIDs[len(winIDs)-1], nil
+}
+
+func (kiosk *Kiosk) getLatestWindowID(name string, searchName string) (string, error) {
+	if searchName == "" {
+		searchName = "chromium"
+	}
+
+	out, err := exec.Command("xdotool", "search", "--onlyvisible", "--name", searchName).Output()
 	if err != nil {
 		return "", fmt.Errorf("[%s] Could not find window: %w", name, err)
 	}
@@ -319,7 +425,61 @@ func (kiosk *Kiosk) getLatestWindowID(name string) (string, error) {
 	return "", fmt.Errorf("[%s] No unique window ID found", name)
 }
 
-func userDataDir(name string) string {
+func (kiosk *Kiosk) launchCustom(name string) {
+	kiosk.mu.Lock()
+	defer kiosk.mu.Unlock()
+
+	window, ok := kiosk.windows[name]
+	if !ok {
+		return
+	}
+
+	originalWinIDs, err := kiosk.xdotoolSearchVisible(window.Config.Exec.WindowSearch)
+	if err != nil {
+		log.Printf("[%s] Error searching for visible windows: %v", name, err)
+		return
+	}
+
+	log.Printf("[%s] Launching custom command: %s with args: %v", name, window.Config.Exec.Command, window.Config.Exec.Args)
+
+	cmd := exec.CommandContext(kiosk.ctx, window.Config.Exec.Command, window.Config.Exec.Args...)
+	cmd.Stderr = nil
+	_ = cmd.Start()
+
+	firstRun := true
+	for {
+		if !firstRun {
+			select {
+			case <-time.After(250 * time.Millisecond):
+			case <-kiosk.ctx.Done():
+				return
+			}
+			firstRun = false
+		}
+
+		winIDs, err := kiosk.xdotoolSearchVisible(window.Config.Exec.WindowSearch)
+		if err != nil {
+			log.Printf("[%s] Error searching for visible windows: %v", name, err)
+			continue
+		}
+
+		if len(winIDs) == 0 {
+			log.Printf("[%s] No visible windows found for %s", name, window.Config.Exec.WindowSearch)
+			continue
+		}
+
+		winID, err := kiosk.xdotoolFindLatestWindowID(name, originalWinIDs, winIDs)
+		if err != nil {
+			log.Printf("[%s] Error finding latest window ID: %v", name, err)
+			continue
+		}
+
+		window.WindowID = winID
+		break
+	}
+}
+
+func chromiumUserDataDir(name string) string {
 	return fmt.Sprintf("/tmp/.kiosk-chrome-user-data-%s", name)
 }
 
@@ -336,7 +496,7 @@ func (kiosk *Kiosk) launchChrome(name string) {
 	if port == 0 {
 		port = kiosk.cfg.DebugPort
 	}
-	userDir := userDataDir(name)
+	userDir := chromiumUserDataDir(name)
 	os.RemoveAll(userDir)
 	os.MkdirAll(userDir, 0755)
 
@@ -359,20 +519,53 @@ func (kiosk *Kiosk) launchChrome(name string) {
 		"--new-window",
 		url,
 	}
+
+	originalWinIDs, err := kiosk.xdotoolSearchVisible("chromium")
+	if err != nil {
+		log.Printf("[%s] Error searching for visible windows: %v", name, err)
+		return
+	}
+
 	cmd := exec.CommandContext(kiosk.ctx, "chromium", args...)
 	cmd.Stderr = nil
 	_ = cmd.Start()
 
-	err := kiosk.waitForDebugger(name, port)
+	err = kiosk.waitForDebugger(name, port)
 	if err != nil {
 		log.Fatalf("[%s] Failed to wait for debugger: %v", name, err)
 	}
 
-	winID, err := kiosk.getLatestWindowID(name)
-	if err != nil {
-		log.Fatalf("[%s] Failed to get latest window ID: %v", name, err)
+	firstRun := true
+	for {
+		if !firstRun {
+			select {
+			case <-time.After(250 * time.Millisecond):
+			case <-kiosk.ctx.Done():
+				return
+			}
+			firstRun = false
+		}
+
+		winIDs, err := kiosk.xdotoolSearchVisible("chromium")
+		if err != nil {
+			log.Printf("[%s] Error searching for visible windows: %v", name, err)
+			continue
+		}
+
+		if len(winIDs) == 0 {
+			log.Printf("[%s] No visible windows found for %s", name, "chromium")
+			continue
+		}
+
+		winID, err := kiosk.xdotoolFindLatestWindowID(name, originalWinIDs, winIDs)
+		if err != nil {
+			log.Printf("[%s] Error finding latest window ID: %v", name, err)
+			continue
+		}
+
+		window.WindowID = winID
+		break
 	}
-	window.WindowID = winID
 
 	// Fetch tabs
 	err = kiosk.waitForTabID(name, port, window, 0)
@@ -496,30 +689,33 @@ func (kiosk *Kiosk) moveWindow(name string) {
 	}
 }
 
-func (kiosk *Kiosk) sendFullscreen(name string) {
+func (kiosk *Kiosk) SendKeyToWindow(name string, key string, delayBeforeSending time.Duration) {
 	window, ok := kiosk.windows[name]
 	if !ok {
 		log.Printf("[%s] No window state found for %s", name, name)
 		return
 	}
 
-	log.Printf("[%s] Sending fullscreen to window %s\n", name, window.WindowID)
+	log.Printf("[%s] Sending %s to window %s\n", name, key, window.WindowID)
 	err := exec.CommandContext(kiosk.ctx, "xdotool", "windowactivate", window.WindowID).Run()
 	if err != nil {
 		log.Printf("[%s] Error activating window %s: %v", name, window.WindowID, err)
 	}
 
 	select {
-	case <-time.After(1000 * time.Millisecond):
+	case <-time.After(delayBeforeSending):
 	case <-kiosk.ctx.Done():
-		log.Printf("[%s] Context done while waiting for fullscreen", name)
 		return
 	}
 
-	err = exec.CommandContext(kiosk.ctx, "xdotool", "key", "--window", window.WindowID, "F11").Run()
+	err = exec.CommandContext(kiosk.ctx, "xdotool", "key", "--window", window.WindowID, key).Run()
 	if err != nil {
-		log.Printf("[%s] Error sending fullscreen to window %s: %v", name, window.WindowID, err)
+		log.Printf("[%s] Error sending %s to window %s: %v", name, key, window.WindowID, err)
 	}
+}
+
+func (kiosk *Kiosk) sendFullscreen(name string) {
+	kiosk.SendKeyToWindow(name, "F11", time.Second)
 }
 
 func (kiosk *Kiosk) portAvailable(port int) bool {
@@ -565,7 +761,7 @@ func (kiosk *Kiosk) tabCycler(name string) {
 	kiosk.wg.Add(1)
 	go func() {
 		defer func() {
-			userDir := userDataDir(name)
+			userDir := chromiumUserDataDir(name)
 			os.RemoveAll(userDir)
 			kiosk.wg.Done()
 		}()
